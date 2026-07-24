@@ -1,0 +1,75 @@
+name: Box Custom Alpha
+
+on:
+  push:
+    branches: [test]
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: box-alpha-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build module and update metadata
+        shell: bash
+        run: |
+          short_sha="$(git rev-parse --short HEAD)"
+          version="alpha-${short_sha}"
+          version_code="$(git show -s --format=%ct HEAD)"
+          mkdir -p staging dist
+          rsync -a ./ staging/ \
+            --exclude .git \
+            --exclude .github \
+            --exclude docs \
+            --exclude staging \
+            --exclude dist \
+            --exclude CHANGELOG.md \
+            --exclude update.json \
+            --exclude build.sh \
+            --exclude LICENSE
+          sed -i "s/^version=.*/version=${version}/" staging/module.prop
+          sed -i "s/^versionCode=.*/versionCode=${version_code}/" staging/module.prop
+          sed -i 's#^updateJson=.*#updateJson=https://github.com/JSJ-Experiments/box/releases/download/Prerelease-Alpha/update.json#' staging/module.prop
+          (cd staging && zip -r -9 -X ../dist/box-alpha.zip .)
+          cat > dist/update.json <<JSON
+          {
+            "version": "${version}",
+            "versionCode": ${version_code},
+            "zipUrl": "https://github.com/JSJ-Experiments/box/releases/download/Prerelease-Alpha/box-alpha.zip",
+            "changelog": "https://raw.githubusercontent.com/JSJ-Experiments/box/test/CHANGELOG.md"
+          }
+          JSON
+          sha256sum dist/box-alpha.zip > dist/checksums.txt
+          printf '%s\n' "$version" > dist/version.txt
+          cat dist/update.json
+
+      - name: Replace moving alpha release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="Prerelease-Alpha"
+          version="$(cat dist/version.txt)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release delete "$tag" --yes
+          fi
+          git tag -f "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag" --force
+          gh release create "$tag" dist/* \
+            --prerelease \
+            --title "Box Custom $version" \
+            --notes "JSJ-Experiments alpha build. This module defaults to the JSJ custom Mihomo release and can update Mihomo without reflashing."

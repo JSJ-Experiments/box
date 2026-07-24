@@ -50,3 +50,8 @@
 ## 致谢
 
 感谢开源社区与上述项目作者提供的设计思路与实现参考。
+
+## JSJ custom Mihomo builds
+
+This experimental branch can update a checksum-verified custom Mihomo core
+without reflashing the module. See [docs/custom-mihomo.md](docs/custom-mihomo.md).

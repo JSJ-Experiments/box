@@ -244,9 +244,11 @@ restart_box() {
 
   if [ -n "$pid" ]; then
     log Info "$core_to_restart 重启完成 [$(date +"%F %R")]"
+    return 0
   else
     log Error "重启 $core_to_restart 失败."
     "${scripts_dir}/box.iptables" disable >/dev/null 2>&1
+    return 1
   fi
 }
 
@@ -771,6 +773,150 @@ upsubs() {
   esac
 }
 
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | busybox awk '{print $1}'
+  else
+    busybox sha256sum "$1" | busybox awk '{print $1}'
+  fi
+}
+
+upkernel_mihomo_custom() {
+  local platform="$1"
+  local arch="$2"
+  # An older settings.ini will not have this key. Default it to the JSJ build;
+  # an explicitly empty value opts back into the original upstream updater.
+  local repo="${mihomo_custom_repo-JSJ-Experiments/mihomo}"
+  local tag="${mihomo_custom_release_tag:-Prerelease-Alpha}"
+  local base_url="${mihomo_custom_base_url-}"
+  local asset="mihomo-${platform}-${arch}.gz"
+  local update_dir="${box_dir}/update"
+  local archive="${update_dir}/${asset}"
+  local checksums="${update_dir}/mihomo-checksums.txt"
+  local candidate="${update_dir}/mihomo.new"
+  local expected_sha
+  local actual_sha
+  local was_running="false"
+
+  if [ -z "${base_url}" ]; then
+    if [ -z "${repo}" ]; then
+      log Error "自定义 Mihomo 仓库和下载地址均为空"
+      return 1
+    fi
+    base_url="https://github.com/${repo}/releases/download/${tag}"
+  fi
+  base_url="${base_url%/}"
+
+  busybox mkdir -p "${update_dir}" "${bin_dir}/backup"
+  rm -f "${archive}" "${checksums}" "${candidate}" >/dev/null 2>&1
+
+  log Info "正在从 ${repo:-自定义 URL} 更新 Mihomo (${platform}/${arch})"
+  if ! upfile "${checksums}" "${base_url}/checksums.txt"; then
+    log Error "下载 Mihomo 校验文件失败"
+    return 1
+  fi
+  if ! upfile "${archive}" "${base_url}/${asset}"; then
+    log Error "下载自定义 Mihomo 核心失败: ${asset}"
+    return 1
+  fi
+
+  expected_sha=$(busybox awk -v asset="${asset}" \
+    '$2 == asset || $2 == "*" asset {print $1; exit}' "${checksums}")
+  actual_sha=$(file_sha256 "${archive}")
+  if [ -z "${expected_sha}" ] || [ "${expected_sha}" != "${actual_sha}" ]; then
+    log Error "Mihomo SHA-256 校验失败 (期望: ${expected_sha:-未找到}, 实际: ${actual_sha:-失败})"
+    rm -f "${archive}" "${candidate}" >/dev/null 2>&1
+    return 1
+  fi
+  log Info "Mihomo SHA-256 校验通过"
+
+  if command -v gunzip >/dev/null 2>&1; then
+    gunzip -c "${archive}" > "${candidate}"
+  else
+    busybox gunzip -c "${archive}" > "${candidate}"
+  fi
+  if [ "$?" -ne 0 ] || [ ! -s "${candidate}" ]; then
+    log Error "解压自定义 Mihomo 核心失败"
+    rm -f "${candidate}" >/dev/null 2>&1
+    return 1
+  fi
+
+  chown "${box_user_group}" "${candidate}" >/dev/null 2>&1
+  chmod 0755 "${candidate}"
+  if ! "${candidate}" -v >/dev/null 2>&1; then
+    log Error "下载的 Mihomo 核心无法执行"
+    rm -f "${candidate}" >/dev/null 2>&1
+    return 1
+  fi
+  if [ -f "${mihomo_config}" ] && \
+     ! "${candidate}" -t -d "${box_dir}/mihomo" -f "${mihomo_config}" > "${box_run}/mihomo_update_report.log" 2>&1; then
+    log Error "新 Mihomo 核心无法通过当前配置检查"
+    log Error "$(<"${box_run}/mihomo_update_report.log")" >&2
+    rm -f "${candidate}" >/dev/null 2>&1
+    return 1
+  fi
+
+  if [ "${bin_name}" = "mihomo" ] && [ -f "${box_pid}" ] && \
+     kill -0 "$(<"${box_pid}" 2>/dev/null)" 2>/dev/null; then
+    was_running="true"
+  fi
+  if [ -f "${bin_dir}/mihomo" ]; then
+    cp -f "${bin_dir}/mihomo" "${bin_dir}/backup/mihomo.bak" || {
+      log Error "备份当前 Mihomo 核心失败"
+      return 1
+    }
+  fi
+
+  if ! mv -f "${candidate}" "${bin_dir}/mihomo"; then
+    log Error "安装新 Mihomo 核心失败"
+    return 1
+  fi
+  chown "${box_user_group}" "${bin_dir}/mihomo" >/dev/null 2>&1
+  chmod 0755 "${bin_dir}/mihomo"
+
+  if [ "${was_running}" = "true" ] && ! restart_box "mihomo"; then
+    log Error "新 Mihomo 启动失败，正在自动回滚"
+    if [ -f "${bin_dir}/backup/mihomo.bak" ]; then
+      cp -f "${bin_dir}/backup/mihomo.bak" "${bin_dir}/mihomo"
+      chown "${box_user_group}" "${bin_dir}/mihomo" >/dev/null 2>&1
+      chmod 0755 "${bin_dir}/mihomo"
+      restart_box "mihomo" || log Error "旧 Mihomo 核心恢复后仍无法启动"
+    fi
+    return 1
+  fi
+
+  rm -f "${archive}" "${checksums}" >/dev/null 2>&1
+  log Info "自定义 Mihomo 更新成功: $("${bin_dir}/mihomo" -v 2>/dev/null | busybox head -1)"
+  return 0
+}
+
+rollbackkernel() {
+  local target="${1:-${bin_name}}"
+  local backup="${bin_dir}/backup/${target}.bak"
+  local candidate="${bin_dir}/.${target}.rollback"
+  local was_running="false"
+
+  if [ ! -f "${backup}" ]; then
+    log Error "没有可用于 ${target} 的备份: ${backup}"
+    return 1
+  fi
+  if [ "${bin_name}" = "${target}" ] && [ -f "${box_pid}" ] && \
+     kill -0 "$(<"${box_pid}" 2>/dev/null)" 2>/dev/null; then
+    was_running="true"
+  fi
+
+  cp -f "${backup}" "${candidate}" || return 1
+  chown "${box_user_group}" "${candidate}" >/dev/null 2>&1
+  chmod 0755 "${candidate}"
+  mv -f "${candidate}" "${bin_dir}/${target}" || return 1
+
+  if [ "${was_running}" = "true" ]; then
+    restart_box "${target}" || return 1
+  fi
+  log Info "${target} 已从备份恢复"
+  return 0
+}
+
 upkernel() {
   setup_github_api
   
@@ -880,6 +1026,12 @@ upkernel() {
       upfile "${box_dir}/${file_kernel}.tar.gz" "${download_link}" && xkernel "$core_to_update" "$platform" "$arch" "$latest_version" "$file_kernel"
       ;;
     "mihomo")
+      if [ -n "${mihomo_custom_repo-JSJ-Experiments/mihomo}" ] || \
+         [ -n "${mihomo_custom_base_url-}" ]; then
+        upkernel_mihomo_custom "${platform}" "${arch}"
+        return $?
+      fi
+
       download_link="https://github.com/MetaCubeX/mihomo/releases"
 
       if [ "${mihomo_stable}" = "enable" ]; then
@@ -1436,7 +1588,10 @@ case "$1" in
     ;;
   upkernel)
     upkernel "$2"
-    ;;  
+    ;;
+  rollbackkernel)
+    rollbackkernel "$2"
+    ;;
   upkernels)
     shift
     upkernels "$@"
@@ -1471,7 +1626,7 @@ case "$1" in
     ;;
   *)
     log Error "$0 $1 未找到"
-    log Info "用法: $0 {check|memcg|blkio|geosub|geox|subs|upkernel [name]|upkernels [name...]|upgeox_all|upxui|upyq|upcurl|upcnip|reload|webroot|bond0|bond1|all}"
+    log Info "用法: $0 {check|memcg|blkio|geosub|geox|subs|upkernel [name]|rollbackkernel [name]|upkernels [name...]|upgeox_all|upxui|upyq|upcurl|upcnip|reload|webroot|bond0|bond1|all}"
     log Info "upkernel 支持的核心: sing-box, mihomo, mihomo_smart, xray, v2fly, hysteria"
     ;;
 esac

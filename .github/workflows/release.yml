@@ -95,8 +95,8 @@ jobs:
           {
             "version": "$VERSION",
             "versionCode": "$DATE_NUM",
-            "zipUrl": "https://github.com/boxproxy/box/releases/download/$VERSION/box-$VERSION.zip",
-            "changelog": "https://github.com/boxproxy/box/raw/master/CHANGELOG.md"
+            "zipUrl": "https://github.com/JSJ-Experiments/box/releases/download/$VERSION/box-$VERSION.zip",
+            "changelog": "https://raw.githubusercontent.com/JSJ-Experiments/box/master/CHANGELOG.md"
           }
           EOF
 
