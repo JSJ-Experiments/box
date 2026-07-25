@@ -2,10 +2,18 @@
 
 source /data/adb/box/settings.ini
 
+# The old adb_tailnet_* names remain accepted for installed configurations.
+# adbd itself is loopback-only; SSH or an explicitly configured tsnet service
+# forward decides how a client reaches it.
+adb_loopback_enable="${adb_loopback_enable:-${adb_tailnet_enable:-false}}"
+adb_loopback_port="${adb_loopback_port:-${adb_tailnet_port:-5555}}"
+
 management_log="${box_run}/management.log"
 ssh_pid="${box_run}/dropbear.pid"
 adb_state="${box_run_state}/adb.previous-port"
 adb_addrs_state="${box_run_state}/adb.previous-listen-addrs"
+# Keep the established rule comment so upgrades can remove an active legacy
+# rule before recreating it with the loopback setting names.
 adb_rule_comment="box-tailnet-adb"
 
 management_log_line() {
@@ -71,18 +79,18 @@ stop_ssh() {
 }
 
 delete_adb_firewall_rules() {
-  while iptables -C INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1; do
-    iptables -D INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1
+  while iptables -C INPUT ! -i lo -p tcp --dport "${adb_loopback_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1; do
+    iptables -D INPUT ! -i lo -p tcp --dport "${adb_loopback_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1
   done
   if command -v ip6tables >/dev/null 2>&1; then
-    while ip6tables -C INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1; do
-      ip6tables -D INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1
+    while ip6tables -C INPUT ! -i lo -p tcp --dport "${adb_loopback_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1; do
+      ip6tables -D INPUT ! -i lo -p tcp --dport "${adb_loopback_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1
     done
   fi
 }
 
 start_adb() {
-  [ "${adb_tailnet_enable}" = "true" ] || return 0
+  [ "${adb_loopback_enable}" = "true" ] || return 0
 
   mkdir -p "${box_run_state}" >/dev/null 2>&1 || true
   if [ ! -f "${adb_state}" ]; then
@@ -90,16 +98,16 @@ start_adb() {
     getprop service.adb.listen_addrs > "${adb_addrs_state}"
   fi
   delete_adb_firewall_rules
-  iptables -I INPUT 1 ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP || return 1
+  iptables -I INPUT 1 ! -i lo -p tcp --dport "${adb_loopback_port}" -m comment --comment "${adb_rule_comment}" -j DROP || return 1
   if command -v ip6tables >/dev/null 2>&1; then
-    ip6tables -I INPUT 1 ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1 || true
+    ip6tables -I INPUT 1 ! -i lo -p tcp --dport "${adb_loopback_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1 || true
   fi
 
-  setprop service.adb.listen_addrs "tcp:127.0.0.1:${adb_tailnet_port}"
-  setprop service.adb.tcp.port "${adb_tailnet_port}"
+  setprop service.adb.listen_addrs "tcp:127.0.0.1:${adb_loopback_port}"
+  setprop service.adb.tcp.port "${adb_loopback_port}"
   stop adbd
   start adbd
-  management_log_line "adbd TCP enabled on port ${adb_tailnet_port}; non-loopback Android interfaces are firewalled"
+  management_log_line "adbd TCP enabled on loopback:${adb_loopback_port}; non-loopback Android interfaces are firewalled"
 }
 
 stop_adb() {
@@ -125,7 +133,7 @@ status_management() {
     echo "SSH: stopped"
   fi
   if [ -f "${adb_state}" ]; then
-    echo "ADB: running on loopback-forward port ${adb_tailnet_port}"
+    echo "ADB: running on loopback:${adb_loopback_port}"
   else
     echo "ADB: stopped"
   fi

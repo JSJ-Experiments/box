@@ -29,9 +29,6 @@ exit-node proxy unless you intentionally want every tsnet node kept online.
     - name: ssh
       listen: 8022
       target: 127.0.0.1:8022
-    - name: adb
-      listen: 5555
-      target: 127.0.0.1:5555
 ```
 
 Bind Mihomo's controller to loopback and set a non-empty secret:
@@ -108,24 +105,46 @@ available, so a loopback-only Android service can also be reached with
 
 ## 4. ADB and scrcpy
 
-ADB is separate from SSH. Enable it only when needed:
+SSH cannot replace the ADB protocol, but it can securely carry a loopback ADB
+connection. Enable loopback adbd only when needed:
 
 ```sh
-adb_tailnet_enable="true"
+adb_loopback_enable="true"
 ```
 
-Then restart management services and connect:
+Restart the management services:
 
 ```sh
-adb connect MANAGEMENT_TAILSCALE_IP:5555
-scrcpy --serial MANAGEMENT_TAILSCALE_IP:5555
+su -c '/data/adb/box/scripts/box.tool management restart'
+```
+
+On the client, keep this SSH tunnel open in one terminal:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 5555:127.0.0.1:5555 \
+  -p 8022 root@MANAGEMENT_TAILSCALE_IP
+```
+
+Then use the forwarded ADB endpoint in another terminal:
+
+```sh
+adb connect 127.0.0.1:5555
+scrcpy --serial 127.0.0.1:5555
 ```
 
 Android's normal ADB RSA authorization still applies. Box requests
 `service.adb.listen_addrs=tcp:127.0.0.1:5555` and also inserts firewall rules
 that reject the port on non-loopback Android interfaces as a fallback for older
 or vendor-modified adbd builds. Disabling the setting and restarting restores
-the previous adbd properties.
+the previous adbd properties. The former `adb_tailnet_enable` and
+`adb_tailnet_port` setting names remain supported.
+
+The SSH tunnel adds a small amount of latency and CPU use because traffic is
+encrypted by both SSH and Tailscale, but scrcpy still works normally. It avoids
+publishing an ADB port to every device allowed to reach the management tsnet
+node. A direct `service-forwards` entry for port 5555 remains possible when
+maximum throughput matters, but is not the recommended default.
 
 ## Battery impact
 
