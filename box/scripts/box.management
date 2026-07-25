@@ -89,8 +89,20 @@ delete_adb_firewall_rules() {
   fi
 }
 
+adb_loopback_alive() {
+  ss -ltnp 2>/dev/null | awk -v wanted="127.0.0.1:${adb_loopback_port}" '
+    /adbd/ && $4 == wanted { found = 1 }
+    END { exit !found }
+  '
+}
+
 start_adb() {
-  [ "${adb_loopback_enable}" = "true" ] || return 0
+  if [ "${adb_loopback_enable}" != "true" ]; then
+    # Restore a listener previously enabled for a temporary session.
+    [ -f "${adb_state}" ] && stop_adb
+    return 0
+  fi
+  adb_loopback_alive && return 0
 
   mkdir -p "${box_run_state}" >/dev/null 2>&1 || true
   if [ ! -f "${adb_state}" ]; then
@@ -103,11 +115,16 @@ start_adb() {
     ip6tables -I INPUT 1 ! -i lo -p tcp --dport "${adb_loopback_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1 || true
   fi
 
-  setprop service.adb.listen_addrs "tcp:127.0.0.1:${adb_loopback_port}"
-  setprop service.adb.tcp.port "${adb_loopback_port}"
+  local requested_listeners
+  # ADB's socket-spec parser recognizes "localhost" as a loopback listener.
+  # A literal 127.0.0.1 host is not accepted for listening by current AOSP
+  # adbd. Android Wireless Debugging opens its separate dynamic TLS listener.
+  requested_listeners="tcp:localhost:${adb_loopback_port}"
+
+  setprop service.adb.listen_addrs "${requested_listeners}"
   stop adbd
   start adbd
-  management_log_line "adbd TCP enabled on loopback:${adb_loopback_port}; non-loopback Android interfaces are firewalled"
+  management_log_line "adbd listeners enabled: ${requested_listeners}; loopback port is firewalled from non-loopback interfaces"
 }
 
 stop_adb() {

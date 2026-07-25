@@ -134,11 +134,19 @@ scrcpy --serial 127.0.0.1:5555
 ```
 
 Android's normal ADB RSA authorization still applies. Box requests
-`service.adb.listen_addrs=tcp:127.0.0.1:5555` and also inserts firewall rules
-that reject the port on non-loopback Android interfaces as a fallback for older
-or vendor-modified adbd builds. Disabling the setting and restarting restores
-the previous adbd properties. The former `adb_tailnet_enable` and
-`adb_tailnet_port` setting names remain supported.
+`service.adb.listen_addrs=tcp:localhost:5555`, which current AOSP adbd binds to
+IPv4 loopback. Android Wireless Debugging independently opens its dynamic TLS
+listener, so both listeners coexist afterward. Enabling the stable listener
+requires one adbd restart, causing existing ADB sessions to disconnect briefly
+and Android to choose a new Wireless Debugging port.
+
+The stable loopback listener does not depend on Wi-Fi and remains usable
+through SSH over any network that keeps the management tsnet node reachable.
+
+Box also inserts firewall rules that reject port 5555 on non-loopback Android
+interfaces as a fallback for older or vendor-modified adbd builds. Disabling
+the setting and restarting restores the previous adbd properties. The former
+`adb_tailnet_enable` and `adb_tailnet_port` setting names remain supported.
 
 The SSH tunnel adds a small amount of latency and CPU use because traffic is
 encrypted by both SSH and Tailscale, but scrcpy still works normally. It avoids
