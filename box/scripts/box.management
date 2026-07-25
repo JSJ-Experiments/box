@@ -46,7 +46,7 @@ start_ssh() {
   # Password authentication and remote forwarding are disabled at build time.
   # Local forwarding stays available for reaching loopback-only device services.
   HOME="${ssh_dir}" PATH="${bin_dir}:/system/bin:/system/xbin:/vendor/bin" \
-    nohup "${server}" -F -E \
+    nohup "${server}" -F \
       -p "127.0.0.1:${ssh_port}" \
       -P "${ssh_pid}" \
       -r "${hostkey}" \

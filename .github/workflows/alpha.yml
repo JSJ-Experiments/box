@@ -63,6 +63,7 @@ jobs:
           tar -xjf dropbear.tar.bz2
           source_dir="$PWD/dropbear-${DROPBEAR_VERSION}"
           cp build/dropbear-localoptions.h "$source_dir/localoptions.h"
+          patch -d "$source_dir" -p1 < build/dropbear-android-authorized-keys.patch
 
           toolchain="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export CC="$toolchain/aarch64-linux-android24-clang"
