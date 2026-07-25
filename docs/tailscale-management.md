@@ -142,6 +142,10 @@ and Android to choose a new Wireless Debugging port.
 
 The stable loopback listener does not depend on Wi-Fi and remains usable
 through SSH over any network that keeps the management tsnet node reachable.
+Ordinary Mihomo updates and core restarts leave Dropbear and adbd running, so
+they do not force Android to select another Wireless Debugging port. Explicitly
+stopping Box still shuts down the management services and restores the prior
+adbd properties.
 
 Box also inserts firewall rules that reject port 5555 on non-loopback Android
 interfaces as a fallback for older or vendor-modified adbd builds. Disabling

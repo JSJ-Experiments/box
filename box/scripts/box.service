@@ -1324,7 +1324,7 @@ start_box() {
     sed -i '/^[[:space:]]*$/d' "${pid_name}"
     log Debug "$(<"${pid_name}")(PID: $PID) 服务仍在运行，自动重启 BOX"
     rm -f "${pid_name}"
-    stop_box
+    stop_box false
     start_box && "${scripts_dir}/box.iptables" renew
     exit 1
   fi
@@ -1373,7 +1373,10 @@ start_box() {
 }
 
 stop_box() {
-  "${scripts_dir}/box.management" stop >/dev/null 2>&1 || true
+  local stop_management="${1:-true}"
+  if [ "${stop_management}" = "true" ]; then
+    "${scripts_dir}/box.management" stop >/dev/null 2>&1 || true
+  fi
   stop_cron
   for bin in "${bin_list[@]}"; do
     if busybox pgrep "${bin}" >/dev/null; then
@@ -1443,18 +1446,20 @@ fi
 
 case "$1" in
   start)
-    stop_box >/dev/null 2>&1
+    # A core start/replacement must not disrupt persistent SSH or adbd.
+    stop_box false >/dev/null 2>&1
     if start_box; then
         $scripts_dir/box.tool webroot >/dev/null 2>&1
     fi
     ;;
   stop)
-    stop_box
+    stop_box true
     ;;
   restart)
     "${scripts_dir}/box.iptables" disable >/dev/null 2>&1 &
     _r_ipt=$!
-    stop_box
+    # Keep management services alive while only the proxy core is replaced.
+    stop_box false
     wait "${_r_ipt}" 2>/dev/null
 
     start_box &
