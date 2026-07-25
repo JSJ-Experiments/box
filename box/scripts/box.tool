@@ -1522,6 +1522,72 @@ webroot() {
   log Info "已生成/更新 WebUI 页面: ${path_webroot} → http://${ip_port}/ui/ (内核: ${bin_name})"
 }
 
+uptailscaleui() {
+  local repo="${tailscale_ui_repo:-JSJ-Experiments/mihomo-tailscale-ui}"
+  local tag="${tailscale_ui_release_tag:-Prerelease-Alpha}"
+  local target="${box_dir}/mihomo/tailscale-ui"
+  local archive="${box_run}/mihomo-tailscale-ui.zip"
+  local extract="${box_run}/tailscale-ui.new"
+  local backup="${box_run}/tailscale-ui.old"
+  local url="https://github.com/${repo}/releases/download/${tag}/mihomo-tailscale-ui.zip"
+
+  mkdir -p "${box_run}" "${box_dir}/mihomo" >/dev/null 2>&1 || return 1
+  if ! upfile "${archive}" "${url}"; then
+    log Error "Tailscale UI 下载失败"
+    return 1
+  fi
+  if ! busybox unzip -l "${archive}" 2>/dev/null | busybox awk '{print $4}' | grep -q '^index\.html$'; then
+    log Error "Tailscale UI 包缺少 index.html"
+    return 1
+  fi
+  if busybox unzip -l "${archive}" 2>/dev/null | busybox awk '{print $4}' | grep -qE '(^/|(^|/)\.\.(/|$))'; then
+    log Error "Tailscale UI 包包含不安全路径"
+    return 1
+  fi
+
+  rm -rf "${extract}" "${backup}" >/dev/null 2>&1
+  mkdir -p "${extract}" || return 1
+  if ! busybox unzip -oq "${archive}" -d "${extract}"; then
+    log Error "Tailscale UI 解压失败"
+    return 1
+  fi
+  [ -d "${target}" ] && mv "${target}" "${backup}"
+  if mv "${extract}" "${target}"; then
+    rm -rf "${backup}" "${archive}" >/dev/null 2>&1
+    chmod -R 0755 "${target}" >/dev/null 2>&1
+    log Info "Tailscale UI 已更新；无需重启核心，刷新页面即可"
+    return 0
+  fi
+  [ -d "${backup}" ] && mv "${backup}" "${target}"
+  log Error "Tailscale UI 安装失败，已回滚"
+  return 1
+}
+
+install_ssh_key() {
+  local source="$1"
+  if [ -z "${source}" ] || [ ! -s "${source}" ]; then
+    log Error "用法: $0 sshkey /path/to/id_ed25519.pub"
+    return 1
+  fi
+  if ! grep -qE '^(restrict |no-[^ ]+ )*(ssh-ed25519|ecdsa-sha2-|sk-|ssh-rsa) ' "${source}"; then
+    log Error "文件不包含受支持的 OpenSSH 公钥"
+    return 1
+  fi
+  mkdir -p "${ssh_dir}" || return 1
+  touch "${ssh_authorized_keys}" || return 1
+  while IFS= read -r key; do
+    echo "${key}" | grep -qE '^(restrict |no-[^ ]+ )*(ssh-ed25519|ecdsa-sha2-|sk-|ssh-rsa) ' || continue
+    grep -qxF "${key}" "${ssh_authorized_keys}" 2>/dev/null || printf '%s\n' "${key}" >> "${ssh_authorized_keys}"
+  done < "${source}"
+  chmod 0600 "${ssh_authorized_keys}"
+  log Info "SSH public key installed at ${ssh_authorized_keys}"
+  if [ "${ssh_enable}" = "true" ]; then
+    "${scripts_dir}/box.management" restart
+  else
+    log Info "Set ssh_enable=\"true\" in settings.ini, then restart Box"
+  fi
+}
+
 bond0() {
   sysctl -w net.ipv4.tcp_low_latency=0 >/dev/null 2>&1
   log Debug "tcp 低延迟: 0"
@@ -1602,6 +1668,15 @@ case "$1" in
   upxui)
     upxui
     ;;
+  uptailscaleui)
+    uptailscaleui
+    ;;
+  sshkey)
+    install_ssh_key "$2"
+    ;;
+  management)
+    "${scripts_dir}/box.management" "${2:-status}"
+    ;;
   upcnip)
     upcnip
     ;;
@@ -1626,7 +1701,7 @@ case "$1" in
     ;;
   *)
     log Error "$0 $1 未找到"
-    log Info "用法: $0 {check|memcg|blkio|geosub|geox|subs|upkernel [name]|rollbackkernel [name]|upkernels [name...]|upgeox_all|upxui|upyq|upcurl|upcnip|reload|webroot|bond0|bond1|all}"
+    log Info "用法: $0 {check|memcg|blkio|geosub|geox|subs|upkernel [name]|rollbackkernel [name]|upkernels [name...]|upgeox_all|upxui|uptailscaleui|sshkey [public-key-file]|management [start|stop|restart|status]|upyq|upcurl|upcnip|reload|webroot|bond0|bond1|all}"
     log Info "upkernel 支持的核心: sing-box, mihomo, mihomo_smart, xray, v2fly, hysteria"
     ;;
 esac

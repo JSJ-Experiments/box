@@ -1367,11 +1367,13 @@ start_box() {
 
   busybox sleep 0.3
   box_bin_alive
+  "${scripts_dir}/box.management" start || log Warning "Tailnet management services did not fully start"
 
   true
 }
 
 stop_box() {
+  "${scripts_dir}/box.management" stop >/dev/null 2>&1 || true
   stop_cron
   for bin in "${bin_list[@]}"; do
     if busybox pgrep "${bin}" >/dev/null; then

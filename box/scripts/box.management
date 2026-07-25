@@ -1,0 +1,156 @@
+#!/system/bin/sh
+
+source /data/adb/box/settings.ini
+
+management_log="${box_run}/management.log"
+ssh_pid="${box_run}/dropbear.pid"
+adb_state="${box_run_state}/adb.previous-port"
+adb_addrs_state="${box_run_state}/adb.previous-listen-addrs"
+adb_rule_comment="box-tailnet-adb"
+
+management_log_line() {
+  mkdir -p "${box_run}" >/dev/null 2>&1 || true
+  printf '%s %s\n' "$(date '+%F %T')" "$*" >> "${management_log}" 2>/dev/null
+}
+
+dropbear_alive() {
+  [ -s "${ssh_pid}" ] && kill -0 "$(cat "${ssh_pid}" 2>/dev/null)" >/dev/null 2>&1
+}
+
+start_ssh() {
+  [ "${ssh_enable}" = "true" ] || return 0
+
+  local server="${bin_dir}/dropbear"
+  local keygen="${bin_dir}/dropbearkey"
+  local hostkey="${ssh_dir}/dropbear_ed25519_host_key"
+
+  if [ ! -f "${server}" ] || [ ! -f "${keygen}" ]; then
+    management_log_line "SSH requested but Dropbear binaries are missing"
+    return 1
+  fi
+  mkdir -p "${ssh_dir}" || return 1
+  chmod 0700 "${ssh_dir}" "${server}" "${keygen}"
+  if [ ! -s "${ssh_authorized_keys}" ]; then
+    management_log_line "SSH remains disabled: add at least one public key to ${ssh_authorized_keys}"
+    return 1
+  fi
+  chmod 0600 "${ssh_authorized_keys}"
+  if [ ! -s "${hostkey}" ]; then
+    "${keygen}" -t ed25519 -f "${hostkey}" >> "${management_log}" 2>&1 || return 1
+    chmod 0600 "${hostkey}"
+  fi
+  if dropbear_alive; then
+    return 0
+  fi
+
+  # Password authentication and remote forwarding are disabled at build time.
+  # Local forwarding stays available for reaching loopback-only device services.
+  HOME="${ssh_dir}" PATH="${bin_dir}:/system/bin:/system/xbin:/vendor/bin" \
+    nohup "${server}" -F -E \
+      -p "127.0.0.1:${ssh_port}" \
+      -P "${ssh_pid}" \
+      -r "${hostkey}" \
+      -D "${ssh_dir}" \
+      -I "${ssh_idle_timeout}" \
+      >> "${management_log}" 2>&1 &
+  local pid=$!
+  echo "${pid}" > "${ssh_pid}"
+  sleep 1
+  if ! kill -0 "${pid}" >/dev/null 2>&1; then
+    management_log_line "Dropbear failed to start"
+    return 1
+  fi
+  management_log_line "Dropbear listening on 127.0.0.1:${ssh_port}"
+}
+
+stop_ssh() {
+  if dropbear_alive; then
+    kill -15 "$(cat "${ssh_pid}")" >/dev/null 2>&1
+  fi
+  rm -f "${ssh_pid}" >/dev/null 2>&1
+}
+
+delete_adb_firewall_rules() {
+  while iptables -C INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1; do
+    iptables -D INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1
+  done
+  if command -v ip6tables >/dev/null 2>&1; then
+    while ip6tables -C INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1; do
+      ip6tables -D INPUT ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1
+    done
+  fi
+}
+
+start_adb() {
+  [ "${adb_tailnet_enable}" = "true" ] || return 0
+
+  mkdir -p "${box_run_state}" >/dev/null 2>&1 || true
+  if [ ! -f "${adb_state}" ]; then
+    getprop service.adb.tcp.port > "${adb_state}"
+    getprop service.adb.listen_addrs > "${adb_addrs_state}"
+  fi
+  delete_adb_firewall_rules
+  iptables -I INPUT 1 ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP || return 1
+  if command -v ip6tables >/dev/null 2>&1; then
+    ip6tables -I INPUT 1 ! -i lo -p tcp --dport "${adb_tailnet_port}" -m comment --comment "${adb_rule_comment}" -j DROP >/dev/null 2>&1 || true
+  fi
+
+  setprop service.adb.listen_addrs "tcp:127.0.0.1:${adb_tailnet_port}"
+  setprop service.adb.tcp.port "${adb_tailnet_port}"
+  stop adbd
+  start adbd
+  management_log_line "adbd TCP enabled on port ${adb_tailnet_port}; non-loopback Android interfaces are firewalled"
+}
+
+stop_adb() {
+  delete_adb_firewall_rules
+  [ -f "${adb_state}" ] || return 0
+  local previous
+  local previous_addrs
+  previous="$(cat "${adb_state}" 2>/dev/null)"
+  previous_addrs="$(cat "${adb_addrs_state}" 2>/dev/null)"
+  [ -n "${previous}" ] || previous="-1"
+  setprop service.adb.listen_addrs "${previous_addrs}"
+  setprop service.adb.tcp.port "${previous}"
+  stop adbd
+  start adbd
+  rm -f "${adb_state}" "${adb_addrs_state}" >/dev/null 2>&1
+  management_log_line "restored adbd TCP setting to ${previous}"
+}
+
+status_management() {
+  if dropbear_alive; then
+    echo "SSH: running on loopback:${ssh_port}"
+  else
+    echo "SSH: stopped"
+  fi
+  if [ -f "${adb_state}" ]; then
+    echo "ADB: running on loopback-forward port ${adb_tailnet_port}"
+  else
+    echo "ADB: stopped"
+  fi
+}
+
+case "$1" in
+  start)
+    start_ssh
+    start_adb
+    ;;
+  stop)
+    stop_ssh
+    stop_adb
+    ;;
+  restart)
+    stop_ssh
+    stop_adb
+    start_ssh
+    start_adb
+    ;;
+  status)
+    status_management
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}" >&2
+    exit 2
+    ;;
+esac

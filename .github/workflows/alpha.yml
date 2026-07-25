@@ -17,12 +17,76 @@ permissions:
 
 jobs:
   package:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Check out Tailscale UI
+        uses: actions/checkout@v6
+        with:
+          repository: JSJ-Experiments/mihomo-tailscale-ui
+          ref: main
+          path: .ui-source
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: .ui-source/package-lock.json
+
+      - name: Build Tailscale UI
+        shell: bash
+        run: |
+          npm --prefix .ui-source ci
+          npm --prefix .ui-source run build
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29-beta1
+
+      - name: Build public-key-only Dropbear for Android
+        shell: bash
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+          DROPBEAR_VERSION: "2026.94"
+          DROPBEAR_SHA256: "e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81"
+        run: |
+          source_url="https://matt.ucc.asn.au/dropbear/releases/dropbear-${DROPBEAR_VERSION}.tar.bz2"
+          curl --fail --location --retry 3 "$source_url" -o dropbear.tar.bz2
+          echo "${DROPBEAR_SHA256}  dropbear.tar.bz2" | sha256sum --check -
+          tar -xjf dropbear.tar.bz2
+          source_dir="$PWD/dropbear-${DROPBEAR_VERSION}"
+          cp build/dropbear-localoptions.h "$source_dir/localoptions.h"
+
+          toolchain="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC="$toolchain/aarch64-linux-android24-clang"
+          export AR="$toolchain/llvm-ar"
+          export RANLIB="$toolchain/llvm-ranlib"
+          export STRIP="$toolchain/llvm-strip"
+          export CFLAGS="-Os -fPIE"
+          export LDFLAGS="-Wl,-z,relro,-z,now -pie"
+          cd "$source_dir"
+          ./configure \
+            --host=aarch64-linux-android \
+            --disable-zlib \
+            --disable-syslog \
+            --disable-shadow \
+            --disable-lastlog \
+            --disable-utmp \
+            --disable-utmpx \
+            --disable-wtmp \
+            --disable-wtmpx
+          make -j"$(nproc)" PROGRAMS="dropbear dropbearkey scp"
+          "$STRIP" dropbear dropbearkey scp
+          mkdir -p "$GITHUB_WORKSPACE/box/bin" "$GITHUB_WORKSPACE/box/licenses"
+          cp dropbear dropbearkey scp "$GITHUB_WORKSPACE/box/bin/"
+          cp LICENSE "$GITHUB_WORKSPACE/box/licenses/dropbear-LICENSE"
 
       - name: Build module and update metadata
         shell: bash
@@ -30,11 +94,17 @@ jobs:
           short_sha="$(git rev-parse --short HEAD)"
           version="alpha-${short_sha}"
           version_code="$(git show -s --format=%ct HEAD)"
+          mkdir -p box/mihomo/tailscale-ui
+          cp -a .ui-source/dist/. box/mihomo/tailscale-ui/
           mkdir -p staging dist
           rsync -a ./ staging/ \
             --exclude .git \
             --exclude .github \
+            --exclude .ui-source \
+            --exclude '/dropbear-*/' \
+            --exclude '/dropbear.tar.bz2' \
             --exclude docs \
+            --exclude '/build/' \
             --exclude staging \
             --exclude dist \
             --exclude CHANGELOG.md \
